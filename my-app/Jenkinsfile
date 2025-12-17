@@ -1,0 +1,91 @@
+pipeline{
+    agent any
+
+    environment {
+    IMAGE_NAME = "myrepo/myapp"
+    IMAGE_TAG  = "${BUILD_NUMBER}"
+    DEPLOY_REPO = "https://github.com/your-username/deploy-repo.git"
+    DEPLOY_BRANCH = "main"
+        }
+
+    stages{
+        stage("Checkout Code"){
+            steps{
+                checkout scm
+            }
+        }
+
+        stage("SonarQube Analysis"){
+            steps{
+                steps {
+                    script {
+                        // Get the scanner path from Jenkins Global Tool Configuration
+                        def scannerHome = tool 'sonar-scanner' 
+                        // withSonarQubeEnv provides the server URL and token from Jenkins settings
+                        withSonarQubeEnv('sonarqube-server') { 
+                            sh "${scannerHome}/bin/sonar-scanner " +
+                                "-Dsonar.projectKey=my-app " +
+                                "-Dsonar.sources=. " +
+                                "-Dsonar.language=py " +
+                                "-Dsonar.python.version=3.x " +
+                                "-Dsonar.python.coverage.reportPaths=coverage.xml" 
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."
+            }
+        }
+
+        stage('Trivy Scan') {
+            steps {
+                sh "trivy image --exit-code 0 ${IMAGE_NAME}:${IMAGE_TAG}"
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                WithDockerRegistry(
+                    credentialsId: 'dockerhub-credentials',
+                    url: 'https://index.docker.io/v1/'
+                ) {
+                    sh "docker push ${IMAGE_NAME}:${IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Update Deployment to Git Repo') {
+            steps {
+                git branch: 'main',
+                    credentialsId: 'git-cred',
+                    url: 'https://github.com/Amogh052003/cicd-test-webapp.git'
+            }
+             sh """
+            rm -rf deploy-repo
+            git clone https://$GIT_USER:$GIT_TOKEN@github.com/your-username/deploy-repo.git
+            cd deploy-repo
+
+            sed -i 's|image: .*|image: ${IMAGE_NAME}:${IMAGE_TAG}|' environments/dev/image.yaml
+
+            git add environments/dev/image.yaml
+            git commit -m "Deploy dev image ${IMAGE_TAG}"
+            git push origin ${DEPLOY_BRANCH}
+          """
+    }    
+}
+    post{
+        always{
+            echo "========always========"
+        }
+        success{
+            echo "========pipeline executed successfully ========"
+        }
+        failure{
+            echo "========pipeline execution failed========"
+        }
+    }
+}
